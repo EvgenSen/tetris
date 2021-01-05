@@ -11,6 +11,9 @@
 
 #define FIELD_X_SIZE 10
 #define FIELD_Y_SIZE 20
+#define WIDE_FILED   1
+
+#define GENERAL_SYMBOL    '%'
 
 #define KEY_ACTION_QUIT   'Q'
 #define KEY_ACTION_LEFT   'A'
