@@ -18,15 +18,16 @@
 #define clear_screen() printf("\033[H\033[J")
 
 #define THREAD_COUNT 2
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_FIGURE_CNT  7
 #define MAX_FIGURE_SIZE 4
 
 enum ret_codes {
-   RET_OK        = 0,
-   RET_ERR       = 1,
-   RET_GAME_OVER = 2,
-   RET_CANT_MOVE = 3,
+	RET_OK        = 0,
+	RET_ERR       = 1,
+	RET_GAME_OVER = 2,
+	RET_CANT_MOVE = 3,
 };
 
 /** playfield uses this markup:
@@ -44,34 +45,114 @@ enum ret_codes {
  */
 unsigned char playfield[FIELD_X_SIZE][FIELD_Y_SIZE];
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+enum playfield_markup {
+	SQUARE_EMPTY   = 0,
+	SQUARE_ACTIVE  = 1,
+	SQUARE_FIXED   = 2,
+};
 
-int cur_pos_x[MAX_FIGURE_SIZE] = {0};
-int cur_pos_y[MAX_FIGURE_SIZE] = {0};
 char key = 0;
 
-int start_pos_list[MAX_FIGURE_CNT][MAX_FIGURE_SIZE][2] =
+int cur_fig_rotate =  0;
+int cur_fig_num    = -1;
+int cur_pos_x[MAX_FIGURE_SIZE] = {0};
+int cur_pos_y[MAX_FIGURE_SIZE] = {0};
+
+typedef struct {
+	/* Count of figure positions while rotation, starting from 0 */
+	int max_rotate_cnt;
+	/* Description offsets relative to the main coordinat
+	 * [Max Rotate Position = 4][Max Figure Size = 4][Coordinat count (x y) = 2] */
+	int offset[4][MAX_FIGURE_SIZE][2];
+} figure_t;
+
+#define NULL_OFFSET  {0, 0}, {0, 0}, {0, 0}, {0, 0}
+
+figure_t figure_list[MAX_FIGURE_CNT] =
 {
 	// %%
 	// %%
-	{ {5, 19}, {4, 19}, {5, 18}, {4, 18} },
+	{
+		0, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-1, 0}, {0, -1}, {-1, -1} },
+			{ NULL_OFFSET },
+			{ NULL_OFFSET },
+			{ NULL_OFFSET },
+		}
+	},
+
+	// %%%
 	//  %
+	{
+		3, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-1, 0}, {1, 0}, {0, -1} },
+			{ {0, 0}, {-1, 0}, {0, 1}, {0, -1} },
+			{ {0, 0}, {-1, 0}, {1, 0}, {0,  1} },
+			{ {0, 0}, { 0, 1}, {1, 0}, {0, -1} },
+		}
+	},
+
+	// %%
+	//  %%
+	{
+		1, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-1, 0}, {0, -1}, { 1, -1} },
+			{ {0, 0}, {-1, 0}, {0,  1}, {-1, -1} },
+			{ NULL_OFFSET },
+			{ NULL_OFFSET },
+		}
+	},
+
+	//  %%
+	// %%
+	{
+		1, // = max_rotate_cnt
+		{
+			{ {0, 0}, {1, 0}, {0, -1}, {-1, -1} },
+			{ {0, 0}, {1, 0}, {0,  1}, { 1, -1} },
+			{ NULL_OFFSET },
+			{ NULL_OFFSET },
+		}
+	},
+
 	// %%%
-	{ {5, 19}, {4, 18}, {5, 18}, {6, 18} },
-	// %%
-	//  %%
-	{ {5, 19}, {4, 19}, {6, 18}, {5, 18} },
-	//  %%
-	// %%
-	{ {5, 19}, {6, 19}, {5, 18}, {4, 18} },
 	// %
+	{
+		3, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-1, 0}, { 1,  0}, {-1, -1} },
+			{ {0, 0}, { 0, 1}, {-1,  1}, { 0, -1} },
+			{ {0, 0}, {-1, 0}, { 1,  0}, { 1,  1} },
+			{ {0, 0}, { 0, 1}, { 1, -1}, { 0, -1} },
+		}
+	},
+
 	// %%%
-	{ {4, 19}, {4, 18}, {5, 18}, {6, 18} },
 	//   %
-	// %%%
-	{ {6, 19}, {4, 18}, {5, 18}, {6, 18} },
+	{
+		3, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-1, 0}, { 1,  0}, { 1, -1} },
+			{ {0, 0}, { 0, 1}, {-1, -1}, { 0, -1} },
+			{ {0, 0}, {-1, 0}, { 1,  0}, {-1,  1} },
+			{ {0, 0}, { 0, 1}, { 1,  1}, { 0, -1} },
+		}
+	},
+
 	// %%%%
-	{ {3, 19}, {4, 19}, {5, 19}, {6, 19} }
+	{
+		1, // = max_rotate_cnt
+		{
+			{ {0, 0}, {-2, 0}, {-1, 0}, {1,  0} },
+			{ {0, 0}, { 0, 2}, { 0, 1}, {0, -1} },
+			{ NULL_OFFSET },
+			{ NULL_OFFSET },
+		}
+	},
+
 };
 
 /** Create new figure.
@@ -87,27 +168,30 @@ int start_pos_list[MAX_FIGURE_CNT][MAX_FIGURE_SIZE][2] =
 int create_new_figure ( void )
 {
 	int i = 0;
-	int fig_num = rand() % MAX_FIGURE_CNT;
-	int start_pos_x[MAX_FIGURE_SIZE] = {0};
-	int start_pos_y[MAX_FIGURE_SIZE] = {0};
 	int ret = RET_OK;
 
-	for (i = 0; i < MAX_FIGURE_SIZE; i++)
+	cur_fig_rotate = 0;
+	cur_fig_num = rand() % MAX_FIGURE_CNT;
+
+	cur_pos_x[0] = FIELD_X_SIZE / 2;
+	cur_pos_y[0] = FIELD_Y_SIZE - 1;
+
+	for (i = 1; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_x[i] = start_pos_x[i] = start_pos_list[fig_num][i][0];
-		cur_pos_y[i] = start_pos_y[i] = start_pos_list[fig_num][i][1];
+		cur_pos_x[i] = cur_pos_x[0] + figure_list[cur_fig_num].offset[0][i][0];
+		cur_pos_y[i] = cur_pos_y[0] + figure_list[cur_fig_num].offset[0][i][1];
 	}
 
 	/* Add current figure to playfield */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		if(playfield[start_pos_x[i]][start_pos_y[i]])
+		if(playfield[cur_pos_x[i]][cur_pos_y[i]])
 		{
 			ret = RET_GAME_OVER;
 		}
 		else
 		{
-			playfield[start_pos_x[i]][start_pos_y[i]] = 1;
+			playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
 		}
 	}
 
@@ -115,7 +199,8 @@ int create_new_figure ( void )
 }
 
 /** Commit current figure.
- *  Change '1' on playfiled to '2'
+ *
+ *  Change current position of figure to SQUARE_FIXED
  *
  * @param      no args
  *
@@ -123,16 +208,27 @@ int create_new_figure ( void )
  */
 void commit_cur_figure ( void )
 {
-	int x = 0;
-	int y = 0;
-
-	for (y = FIELD_Y_SIZE - 1; y >= 0; y--)
+	int i = 0;
+	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		for (x = 0; x < FIELD_X_SIZE; x++)
-		{
-			if(playfield[x][y] == 1)
-				playfield[x][y] = 2;
-		}
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_FIXED;
+	}
+}
+
+/** Remove current figure.
+ *
+ *  Change current position of figure to SQUARE_EMPTY
+ *
+ * @param      no args
+ *
+ * @return     no returns
+ */
+void remove_cur_figure ( void )
+{
+	int i = 0;
+	for (i = 0; i < MAX_FIGURE_SIZE; i++)
+	{
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_EMPTY;
 	}
 }
 
@@ -195,7 +291,8 @@ void print_screen ( int game_over )
 	clear_screen();
 
 #ifdef DEBUG
-	
+	printf("DBG: rotate=%d\n", cur_fig_rotate);
+	printf("DBG: cur=%d\n", cur_fig_num);
 	printf("DBG: game_over=%d\n", game_over);
 	printf("DBG: x=%d y=%d\n", cur_pos_x[0], cur_pos_y[0]);
 #endif
@@ -212,7 +309,7 @@ void print_screen ( int game_over )
 		printf("|");
 		for (x = 0; x < FIELD_X_SIZE; x++)
 		{
-			if(playfield[x][y] == 0)
+			if(playfield[x][y] == SQUARE_EMPTY)
 				printf("%c ", WIDE_FILED ? ' ' : 0);
 			else
 				printf("%c%c", WIDE_FILED ? GENERAL_SYMBOL : 0, GENERAL_SYMBOL);
@@ -250,21 +347,17 @@ int key_action_left ( void )
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		if((cur_pos_x[i] - 1) < 0 ||
-		   playfield[cur_pos_x[i] - 1][cur_pos_y[i]] == 2)
+		   playfield[cur_pos_x[i] - 1][cur_pos_y[i]] == SQUARE_FIXED)
 		{
 			return RET_CANT_MOVE;
 		}
 	}
-	/* Remove current figure */
-	for (i = 0; i < MAX_FIGURE_SIZE; i++)
-	{
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 0;
-	}
+	remove_cur_figure();
 	/* Add current figure one square to the left */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		cur_pos_x[i]--;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 1;
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
 	}
 
 	return RET_OK;
@@ -285,21 +378,17 @@ int key_action_right ( void )
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		if((cur_pos_x[i] + 1) > (FIELD_X_SIZE - 1) ||
-		   playfield[cur_pos_x[i] + 1][cur_pos_y[i]] == 2)
+		   playfield[cur_pos_x[i] + 1][cur_pos_y[i]] == SQUARE_FIXED)
 		{
 			return RET_CANT_MOVE;
 		}
 	}
-	/* Remove current figure */
-	for (i = 0; i < MAX_FIGURE_SIZE; i++)
-	{
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 0;
-	}
+	remove_cur_figure();
 	/* Add current figure one square to the right */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		cur_pos_x[i]++;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 1;
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
 	}
 
 	return RET_OK;
@@ -324,7 +413,7 @@ int key_action_down ( void )
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		if((cur_pos_y[i] - 1) < 0 ||
-		   playfield[cur_pos_x[i]][cur_pos_y[i] - 1] == 2)
+		   playfield[cur_pos_x[i]][cur_pos_y[i] - 1] == SQUARE_FIXED)
 		{
 			commit_cur_figure();
 			check_full_line();
@@ -332,16 +421,12 @@ int key_action_down ( void )
 			return (( ret == RET_OK ) ? RET_CANT_MOVE : RET_GAME_OVER);
 		}
 	}
-	/* Remove current figure */
-	for (i = 0; i < MAX_FIGURE_SIZE; i++)
-	{
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 0;
-	}
+	remove_cur_figure();
 	/* Add current figure one square to the down */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
 		cur_pos_y[i]--;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = 1;
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
 	}
 	return ret;
 }
@@ -356,14 +441,67 @@ int key_action_down ( void )
 int key_action_drop ( void )
 {
 	int ret;
-	while ((ret = key_action_down()) == RET_OK) { };
+	while ((ret = key_action_down()) == RET_OK);
 
 	return ret;
 }
 
-void key_action_rotate ( void )
+/** Moves figure one square to the down.
+ *  If can't move, commit current figure,
+ *  check full lines and create new figure.
+ *
+ * @param      no args
+ *
+ * @return     RET_OK        - Rotated Ok
+ *             RET_CANT_MOVE - Can't rotate
+ */
+int key_action_rotate ( void )
 {
+	int i = 0;
+	int new_x, new_y, new_fig_rotate;
 
+	if(figure_list[cur_fig_num].max_rotate_cnt == 0)
+	{
+		return RET_CANT_MOVE;
+	}
+
+	/* Set new rotate number */
+	if((cur_fig_rotate + 1) <= figure_list[cur_fig_num].max_rotate_cnt)
+	{
+		new_fig_rotate = cur_fig_rotate + 1;
+	}
+	else
+	{
+		new_fig_rotate = 0;
+	}
+
+	/* Checking for collisions with bottom, walls or other figures */
+	for (i = 1; i < MAX_FIGURE_SIZE; i++)
+	{
+		new_x = cur_pos_x[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][0];
+		new_y = cur_pos_y[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][1];
+
+		if(new_x < 0 || new_x >= FIELD_X_SIZE ||
+		   new_y < 0 || new_y >= FIELD_Y_SIZE ||
+		   playfield[new_x][new_y] == SQUARE_FIXED )
+		{
+			return RET_CANT_MOVE;
+		}
+	}
+
+	/* Update figure position */
+	remove_cur_figure();
+	/* Main coordinate does not change */
+	playfield[cur_pos_x[0]][cur_pos_y[0]] = SQUARE_ACTIVE;
+	for (i = 1; i < MAX_FIGURE_SIZE; i++)
+	{
+		cur_pos_x[i] = cur_pos_x[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][0];
+		cur_pos_y[i] = cur_pos_y[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][1];
+		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+	}
+	cur_fig_rotate = new_fig_rotate;
+
+	return RET_OK;
 }
 
 /** Choose key action based on global var 'key'
