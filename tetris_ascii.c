@@ -1,5 +1,5 @@
 /*
- * tetris_ascii.c -
+ * tetris_ascii.c - Console implementation of Tetris
  *
  * Author: Evgeniy Sennikov <sennikov.work@ya.ru>
  */
@@ -14,21 +14,9 @@
 #include <time.h>
 
 #include "tetris_ascii.h"
+#include "settings.h"
 
-#define clear_screen() printf("\033[H\033[J")
-
-#define THREAD_COUNT 2
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-
-#define MAX_FIGURE_CNT  7
-#define MAX_FIGURE_SIZE 4
-
-enum ret_codes {
-	RET_OK        = 0,
-	RET_ERR       = 1,
-	RET_GAME_OVER = 2,
-	RET_CANT_MOVE = 3,
-};
 
 /** playfield uses this markup:
  *  0 - empty squares
@@ -45,28 +33,15 @@ enum ret_codes {
  */
 unsigned char playfield[FIELD_X_SIZE][FIELD_Y_SIZE];
 
-enum playfield_markup {
-	SQUARE_EMPTY   = 0,
-	SQUARE_ACTIVE  = 1,
-	SQUARE_FIXED   = 2,
-};
+/* Save info about next figure */
+unsigned char header[HEADER_X_SIZE][HEADER_Y_SIZE];
 
+/* Readed key. Used by two threads */
 char key = 0;
 
-int cur_fig_rotate =  0;
-int cur_fig_num    = -1;
-int cur_pos_x[MAX_FIGURE_SIZE] = {0};
-int cur_pos_y[MAX_FIGURE_SIZE] = {0};
+stats_t st = {0, };
 
-typedef struct {
-	/* Count of figure positions while rotation, starting from 0 */
-	int max_rotate_cnt;
-	/* Description offsets relative to the main coordinat
-	 * [Max Rotate Position = 4][Max Figure Size = 4][Coordinat count (x y) = 2] */
-	int offset[4][MAX_FIGURE_SIZE][2];
-} figure_t;
-
-#define NULL_OFFSET  {0, 0}, {0, 0}, {0, 0}, {0, 0}
+general_t gen = {0, };
 
 figure_t figure_list[MAX_FIGURE_CNT] =
 {
@@ -157,7 +132,8 @@ figure_t figure_list[MAX_FIGURE_CNT] =
 
 /** Create new figure.
  *
- *  Figure is randomly selected, set initial coordinates
+ *  Figure is randomly selected, add next figure to header,
+ *  set initial coordinates for current figure
  *  and checking the possibility of adding figure
  *
  * @param      no args
@@ -168,30 +144,61 @@ figure_t figure_list[MAX_FIGURE_CNT] =
 int create_new_figure ( void )
 {
 	int i = 0;
+	int x, y;
 	int ret = RET_OK;
 
-	cur_fig_rotate = 0;
-	cur_fig_num = rand() % MAX_FIGURE_CNT;
+	gen.cur_fig_rotate = 0;
 
-	cur_pos_x[0] = FIELD_X_SIZE / 2;
-	cur_pos_y[0] = FIELD_Y_SIZE - 1;
+	if(gen.next_fig_num < 0)
+	{
+		gen.next_fig_num = rand() % MAX_FIGURE_CNT;
+	}
+	gen.cur_fig_num = gen.next_fig_num;
+	while( (gen.next_fig_num = rand() % MAX_FIGURE_CNT) == gen.cur_fig_num);
 
+	/* Set coordinates for next figure for header */
+	gen.cur_pos_x[0] = 2;
+	gen.cur_pos_y[0] = HEADER_Y_SIZE - 1;
 	for (i = 1; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_x[i] = cur_pos_x[0] + figure_list[cur_fig_num].offset[0][i][0];
-		cur_pos_y[i] = cur_pos_y[0] + figure_list[cur_fig_num].offset[0][i][1];
+		gen.cur_pos_x[i] = gen.cur_pos_x[0] + NEXT_FIGURE().offset[0][i][X_INDEX];
+		gen.cur_pos_y[i] = gen.cur_pos_y[0] + NEXT_FIGURE().offset[0][i][Y_INDEX];
+	}
+
+	/* Clean header */
+	for (y = 0; y < HEADER_Y_SIZE; y++)
+	{
+		for (x = 0; x < HEADER_X_SIZE; x++)
+		{
+			header[x][y] = SQUARE_EMPTY;
+		}
+	}
+
+	/* Add next figure to header */
+	for (i = 0; i < MAX_FIGURE_SIZE; i++)
+	{
+		header[gen.cur_pos_x[i]][gen.cur_pos_y[i]] = SQUARE_FIXED;
+	}
+
+	/* Set coordinates for current figure */
+	gen.cur_pos_x[0] = FIELD_X_SIZE / 2;
+	gen.cur_pos_y[0] = FIELD_Y_SIZE - 1;
+	for (i = 1; i < MAX_FIGURE_SIZE; i++)
+	{
+		gen.cur_pos_x[i] = gen.cur_pos_x[0] + CUR_FIGURE().offset[0][i][X_INDEX];
+		gen.cur_pos_y[i] = gen.cur_pos_y[0] + CUR_FIGURE().offset[0][i][Y_INDEX];
 	}
 
 	/* Add current figure to playfield */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		if(playfield[cur_pos_x[i]][cur_pos_y[i]])
+		if(CUR_FIELD_VAL(i))
 		{
 			ret = RET_GAME_OVER;
 		}
 		else
 		{
-			playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+			CUR_FIELD_VAL(i) = SQUARE_ACTIVE;
 		}
 	}
 
@@ -211,7 +218,7 @@ void commit_cur_figure ( void )
 	int i = 0;
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_FIXED;
+		CUR_FIELD_VAL(i) = SQUARE_FIXED;
 	}
 }
 
@@ -228,7 +235,7 @@ void remove_cur_figure ( void )
 	int i = 0;
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_EMPTY;
+		CUR_FIELD_VAL(i) = SQUARE_EMPTY;
 	}
 }
 
@@ -252,8 +259,25 @@ void remove_line ( int line )
 	}
 }
 
+/** Calculate current level and delay based on lines
+ *
+ * @param      no args
+ *
+ * @return     no returns
+ */
+void calc_level_and_delay ( void )
+{
+	st.level = LEVEL_START + (st.line / LEVEL_STEP);
+
+	st.delay = DELAY_START - (st.level * DELAY_STEP);
+
+	if(st.delay <= 0)
+		st.delay = 1;
+}
+
 /** Checks each line for fullness. If the line is full
- *  remove it and shift all higher squares
+ *  remove it and shift all higher squares. Increases
+ *  score based on removed lines.
  *
  * @param      no args
  *
@@ -264,6 +288,7 @@ void check_full_line ( void )
 	int x = 0;
 	int y = 0;
 	int sum = 0;
+	int line_cnt = 0;
 
 	for (y = 0; y < FIELD_Y_SIZE; y++)
 	{
@@ -275,12 +300,57 @@ void check_full_line ( void )
 		}
 		if(sum >= FIELD_X_SIZE)
 		{
+			st.line++;
+			line_cnt++;
 			remove_line(y);
 			/* After remove and shift line
 			 * need recheck current line */
 			y--;
 		}
 	}
+
+	switch (line_cnt)
+	{
+	case 1:
+		st.score += RM_1_LINE_SCORE;
+		break;
+	case 2:
+		st.score += RM_2_LINE_SCORE;
+		break;
+	case 3:
+		st.score += RM_3_LINE_SCORE;
+		break;
+	case 4:
+		st.score += RM_4_LINE_SCORE;
+		st.tetris++;
+		break;
+	default:
+		break;
+	}
+
+	if (line_cnt)
+	{
+		calc_level_and_delay();
+	}
+
+}
+
+/** Prints +----+ based on width from settings
+ *
+ * @param      no args
+ *
+ * @return     no returns
+ */
+void print_horizontal_line ( void )
+{
+	int x = 0;
+
+	printf("+");
+	for (x = 0; x < FIELD_X_SIZE; x++)
+	{
+		printf("-%c", WIDE_FILED ? '-' : 0);
+	}
+	printf("+\n");
 }
 
 void print_screen ( int game_over )
@@ -291,25 +361,21 @@ void print_screen ( int game_over )
 	clear_screen();
 
 #ifdef DEBUG
-	printf("DBG: rotate=%d\n", cur_fig_rotate);
-	printf("DBG: cur=%d\n", cur_fig_num);
+	printf("DBG: delay=%d\n", st.delay);
+	printf("DBG: rotate=%d\n", gen.cur_fig_rotate);
+	printf("DBG: cur=%d next=%d\n", gen.cur_fig_num, gen.next_fig_num);
 	printf("DBG: game_over=%d\n", game_over);
-	printf("DBG: x=%d y=%d\n", cur_pos_x[0], cur_pos_y[0]);
+	printf("DBG: x=%d y=%d\n", gen.cur_pos_x[0], gen.cur_pos_y[0]);
 #endif
 
-	printf("+");
-	for (x = 0; x < FIELD_X_SIZE; x++)
-	{
-		printf("-%c", WIDE_FILED ? '-' : 0);
-	}
-	printf("+\n");
+	print_horizontal_line();
 
-	for (y = FIELD_Y_SIZE - 1; y >= 0; y--)
+	for (y = (HEADER_Y_SIZE - 1); y >= 0; y--)
 	{
 		printf("|");
 		for (x = 0; x < FIELD_X_SIZE; x++)
 		{
-			if(playfield[x][y] == SQUARE_EMPTY)
+			if (header[x][y] == SQUARE_EMPTY)
 				printf("%c ", WIDE_FILED ? ' ' : 0);
 			else
 				printf("%c%c", WIDE_FILED ? GENERAL_SYMBOL : 0, GENERAL_SYMBOL);
@@ -317,16 +383,35 @@ void print_screen ( int game_over )
 		printf("|\n");
 	}
 
-	printf("+");
-	for (x = 0; x < FIELD_X_SIZE; x++)
-	{
-		printf("-%c", WIDE_FILED ? '-' : 0);
-	}
-	printf("+\n");
+	print_horizontal_line();
 
-	if(game_over)
+	printf("| Score: %d\n", st.score);
+	printf("| Level: %d\n", st.level);
+	printf("| Line:  %d\n", st.line);
+
+	print_horizontal_line();
+
+	for (y = (FIELD_Y_SIZE - 1); y >= 0; y--)
 	{
-		printf(" GAME OVER\n");
+		printf("|");
+		for (x = 0; x < FIELD_X_SIZE; x++)
+		{
+			if (playfield[x][y] == SQUARE_EMPTY)
+				printf("%c ", WIDE_FILED ? ' ' : 0);
+			else if(game_over)
+				printf("%c%c", WIDE_FILED ? GAME_OVER_SYMBOL : 0, GAME_OVER_SYMBOL);
+			else
+				printf("%c%c", WIDE_FILED ? GENERAL_SYMBOL : 0, GENERAL_SYMBOL);
+		}
+		printf("|\n");
+	}
+
+	print_horizontal_line();
+
+	if (game_over)
+	{
+		printf("| GAME OVER\n");
+		print_horizontal_line();
 	}
 
 	printf("Press '%c' to quit\n", KEY_ACTION_QUIT);
@@ -346,8 +431,8 @@ int key_action_left ( void )
 	/* Checking for collisions with wall or other figures */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		if((cur_pos_x[i] - 1) < 0 ||
-		   playfield[cur_pos_x[i] - 1][cur_pos_y[i]] == SQUARE_FIXED)
+		if((gen.cur_pos_x[i] - 1) < 0 ||
+		   playfield[gen.cur_pos_x[i] - 1][gen.cur_pos_y[i]] == SQUARE_FIXED)
 		{
 			return RET_CANT_MOVE;
 		}
@@ -356,8 +441,8 @@ int key_action_left ( void )
 	/* Add current figure one square to the left */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_x[i]--;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+		gen.cur_pos_x[i]--;
+		CUR_FIELD_VAL(i) = SQUARE_ACTIVE;
 	}
 
 	return RET_OK;
@@ -377,8 +462,8 @@ int key_action_right ( void )
 	/* Checking for collisions with wall or other figures */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		if((cur_pos_x[i] + 1) > (FIELD_X_SIZE - 1) ||
-		   playfield[cur_pos_x[i] + 1][cur_pos_y[i]] == SQUARE_FIXED)
+		if((gen.cur_pos_x[i] + 1) > (FIELD_X_SIZE - 1) ||
+		   playfield[gen.cur_pos_x[i] + 1][gen.cur_pos_y[i]] == SQUARE_FIXED)
 		{
 			return RET_CANT_MOVE;
 		}
@@ -387,8 +472,8 @@ int key_action_right ( void )
 	/* Add current figure one square to the right */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_x[i]++;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+		gen.cur_pos_x[i]++;
+		CUR_FIELD_VAL(i) = SQUARE_ACTIVE;
 	}
 
 	return RET_OK;
@@ -412,10 +497,11 @@ int key_action_down ( void )
 	/* Checking for collisions with bottom or other figures */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		if((cur_pos_y[i] - 1) < 0 ||
-		   playfield[cur_pos_x[i]][cur_pos_y[i] - 1] == SQUARE_FIXED)
+		if((gen.cur_pos_y[i] - 1) < 0 ||
+		   playfield[gen.cur_pos_x[i]][gen.cur_pos_y[i] - 1] == SQUARE_FIXED)
 		{
 			commit_cur_figure();
+			st.score += FIELD_Y_SIZE - gen.cur_pos_y[0];
 			check_full_line();
 			ret = create_new_figure();
 			return (( ret == RET_OK ) ? RET_CANT_MOVE : RET_GAME_OVER);
@@ -425,8 +511,8 @@ int key_action_down ( void )
 	/* Add current figure one square to the down */
 	for (i = 0; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_y[i]--;
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+		gen.cur_pos_y[i]--;
+		CUR_FIELD_VAL(i) = SQUARE_ACTIVE;
 	}
 	return ret;
 }
@@ -442,6 +528,8 @@ int key_action_drop ( void )
 {
 	int ret;
 	while ((ret = key_action_down()) == RET_OK);
+
+	st.score += 5;
 
 	return ret;
 }
@@ -460,15 +548,15 @@ int key_action_rotate ( void )
 	int i = 0;
 	int new_x, new_y, new_fig_rotate;
 
-	if(figure_list[cur_fig_num].max_rotate_cnt == 0)
+	if(CUR_FIGURE().max_rotate_cnt == 0)
 	{
 		return RET_CANT_MOVE;
 	}
 
 	/* Set new rotate number */
-	if((cur_fig_rotate + 1) <= figure_list[cur_fig_num].max_rotate_cnt)
+	if((gen.cur_fig_rotate + 1) <= CUR_FIGURE().max_rotate_cnt)
 	{
-		new_fig_rotate = cur_fig_rotate + 1;
+		new_fig_rotate = gen.cur_fig_rotate + 1;
 	}
 	else
 	{
@@ -478,8 +566,8 @@ int key_action_rotate ( void )
 	/* Checking for collisions with bottom, walls or other figures */
 	for (i = 1; i < MAX_FIGURE_SIZE; i++)
 	{
-		new_x = cur_pos_x[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][0];
-		new_y = cur_pos_y[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][1];
+		new_x = gen.cur_pos_x[0] + CUR_FIGURE().offset[new_fig_rotate][i][X_INDEX];
+		new_y = gen.cur_pos_y[0] + CUR_FIGURE().offset[new_fig_rotate][i][Y_INDEX];
 
 		if(new_x < 0 || new_x >= FIELD_X_SIZE ||
 		   new_y < 0 || new_y >= FIELD_Y_SIZE ||
@@ -492,14 +580,14 @@ int key_action_rotate ( void )
 	/* Update figure position */
 	remove_cur_figure();
 	/* Main coordinate does not change */
-	playfield[cur_pos_x[0]][cur_pos_y[0]] = SQUARE_ACTIVE;
+	playfield[gen.cur_pos_x[0]][gen.cur_pos_y[0]] = SQUARE_ACTIVE;
 	for (i = 1; i < MAX_FIGURE_SIZE; i++)
 	{
-		cur_pos_x[i] = cur_pos_x[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][0];
-		cur_pos_y[i] = cur_pos_y[0] + figure_list[cur_fig_num].offset[new_fig_rotate][i][1];
-		playfield[cur_pos_x[i]][cur_pos_y[i]] = SQUARE_ACTIVE;
+		gen.cur_pos_x[i] = gen.cur_pos_x[0] + CUR_FIGURE().offset[new_fig_rotate][i][X_INDEX];
+		gen.cur_pos_y[i] = gen.cur_pos_y[0] + CUR_FIGURE().offset[new_fig_rotate][i][Y_INDEX];
+		CUR_FIELD_VAL(i) = SQUARE_ACTIVE;
 	}
-	cur_fig_rotate = new_fig_rotate;
+	gen.cur_fig_rotate = new_fig_rotate;
 
 	return RET_OK;
 }
@@ -580,8 +668,12 @@ void main_loop ( void * arg )
 {
 	struct timespec ts_first, ts_cur;
 	unsigned long spent_ms = 0;
-	int delay = 1000;
 	int ret;
+
+	gen.cur_fig_num = gen.next_fig_num = -1;
+	st.level = LEVEL_START;
+
+	calc_level_and_delay();
 
 	clock_gettime (CLOCK_ID, &ts_first);
 	do {
@@ -600,7 +692,7 @@ void main_loop ( void * arg )
 		pthread_mutex_unlock(&mutex);
 		clock_gettime (CLOCK_ID, &ts_cur);
 		spent_ms = 1000 * (ts_cur.tv_sec - ts_first.tv_sec) + ((ts_cur.tv_nsec - ts_first.tv_nsec) / 1000000 );
-		if (spent_ms > delay)
+		if (spent_ms > st.delay)
 		{
 			if(key_action_down() == RET_GAME_OVER)
 			{
