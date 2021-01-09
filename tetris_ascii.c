@@ -149,11 +149,15 @@ int create_new_figure ( void )
 
 	gen.cur_fig_rotate = 0;
 
-	if(gen.next_fig_num < 0)
+	if(gen.cur_fig_num < 0)
 	{
-		gen.next_fig_num = rand() % MAX_FIGURE_CNT;
+		gen.cur_fig_num = rand() % MAX_FIGURE_CNT;
 	}
-	gen.cur_fig_num = gen.next_fig_num;
+	else
+	{
+		gen.cur_fig_num = gen.next_fig_num;
+	}
+
 	while( (gen.next_fig_num = rand() % MAX_FIGURE_CNT) == gen.cur_fig_num);
 
 	/* Set coordinates for next figure for header */
@@ -675,6 +679,9 @@ void main_loop ( void * arg )
 
 	calc_level_and_delay();
 
+	create_new_figure();
+	print_screen(0);
+
 	clock_gettime (CLOCK_ID, &ts_first);
 	do {
 		pthread_mutex_lock(&mutex);
@@ -717,9 +724,6 @@ int main ( int argc, const char * argv[] )
 	settings = settings_backup;
 	settings.c_lflag &= ~ICANON;
 	tcsetattr(0, TCSANOW, &settings);
-
-	create_new_figure();
-	print_screen(0);
 
 	srand(time(NULL));
 
