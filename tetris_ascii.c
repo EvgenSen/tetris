@@ -7,8 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <ncurses.h>
-#include <unistd.h>
 #include <termios.h>
 #include <pthread.h>
 #include <time.h>
